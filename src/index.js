@@ -116,7 +116,7 @@ async function getTodaysBrief(env) {
     sources.forEach((s, j) => {
       const num = j + 1;
       const url = s.url || '#';
-      sourcesHtml += `<a href="${url}" style="color:#2b6cb0;text-decoration:none;">[${num}]</a> `;
+      sourcesHtml += `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:#2b6cb0;text-decoration:none;">[${num}]</a> `;
     });
     html += `<p style="margin:12px 0 0 0;font-size:0.8125rem;color:#999;">${sourcesHtml.trim()}</p>`;
   }
