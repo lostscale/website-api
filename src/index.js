@@ -15,7 +15,7 @@
 // ─── Book of the Week ───
 
 const BOOKS = [
-  { title: "Atomic Habits", author: "James Clear", topic: "Self-Improvement", why: "The definitive guide to building good habits and breaking bad ones. Small changes, remarkable results.", cover: "https://m.media-amazon.com/images/I/81bGK3P5Q5L._SY466_.jpg", link: "https://www.amazon.in/dp/1847941834?&linkCode=ll2&tag=lostscale-21&linkId=c4d49457cb1cf464a421be4753a64567&ref_=as_li_ss_tl" },
+  { title: "Atomic Habits", author: "James Clear", topic: "Self-Improvement", why: "The definitive guide to building good habits and breaking bad ones. Small changes, remarkable results.", cover: "https://m.media-amazon.com/images/I/818PnYus11L._SY466_.jpg", link: "https://www.amazon.in/dp/1847941834?&linkCode=ll2&tag=lostscale-21&linkId=c4d49457cb1cf464a421be4753a64567&ref_=as_li_ss_tl" },
 ];
 
 function getBookOfTheWeek() {
