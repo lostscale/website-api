@@ -62,10 +62,17 @@ async function getTodaysBrief(env) {
     html += `<p style="margin:0 0 16px 0;font-size:0.9375rem;line-height:1.6;color:#1a1a1a;">${parsed.paragraph}</p>`;
   }
 
-  if (parsed.sources && parsed.sources.length > 0) {
-    html += '<p style="margin:12px 0 0 0;font-size:0.75rem;color:#999;">Sources: ';
-    html += parsed.sources.map(s => `<a href="${s.url}" style="color:#666;text-decoration:none;">${s.title}</a>`).join(' · ');
-    html += '</p>';
+  // Sources are nested inside searchResult in the cache
+  const sources = parsed.sources || (parsed.searchResult && parsed.searchResult.sources) || [];
+
+  if (sources.length > 0) {
+    let sourcesHtml = 'Sources: ';
+    sources.forEach((s, j) => {
+      const num = j + 1;
+      const url = s.url || '#';
+      sourcesHtml += `<a href="${url}" style="color:#2b6cb0;text-decoration:none;">[${num}]</a> `;
+    });
+    html += `<p style="margin:12px 0 0 0;font-size:0.8125rem;color:#999;">${sourcesHtml.trim()}</p>`;
   }
 
   return { html, topic };
