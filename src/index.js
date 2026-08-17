@@ -7,8 +7,8 @@
  *  - GET /book-of-day     → returns today's recommended book (deterministic per day)
  *  - POST /add-book       → admin: add a book to the books table
  *
- * Runs at 13:00 UTC (1 hour after the email worker at 12:00 UTC)
- * so the cache is already populated by the time this fires.
+ * No cron — caches are pre-warmed by the email-worker calling this API
+ * after it finishes generating daily briefs (midnight UTC).
  */
 
 // ─── Interests (canonical source) ───

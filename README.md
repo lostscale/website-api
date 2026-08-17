@@ -11,10 +11,10 @@ Read-only API worker for lostscale.com homepage.
 ## Cache
 
 Reads from D1 tables:
-- `brief_cache` — populated by email-worker (cron at 12:00 UTC)
+- `brief_cache` — populated by email-worker (cron at 00:00 UTC)
 - `daily_brief_cache` — one brief section picked per day, same for all visitors
 - `daily_book_cache` — one book picked per day, same for all visitors
-This worker runs at 13:00 UTC as safety net to pre-populate daily caches.
+No cron — caches are pre-warmed by the email-worker calling this API after it finishes.
 
 ## Deploy
 

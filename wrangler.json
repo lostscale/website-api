@@ -9,10 +9,5 @@
       "database_name": "lostscale-db",
       "database_id": "a2f35dfa-e443-4062-bb76-25832f30fc33"
     }
-  ],
-  "triggers": {
-    "crons": [
-      "0 13 * * *"
-    ]
-  }
+  ]
 }
