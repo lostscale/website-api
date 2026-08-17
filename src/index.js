@@ -2,13 +2,39 @@
  * LostScale Website API Worker
  *
  * Serves read-only content for the lostscale.com homepage:
- *  - GET /todays-brief  → picks a random cached brief section from today's email run
- *  - GET /book-of-week  → returns the current book of the week (deterministic per ISO week)
- *  - POST /add-book     → admin: add a book to the books table
+ *  - GET /interests       → canonical list of valid interests (for website chips + email worker validation)
+ *  - GET /todays-brief    → picks a random cached brief section from today's email run
+ *  - GET /book-of-week    → returns the current book of the week (deterministic per ISO week)
+ *  - POST /add-book       → admin: add a book to the books table
  *
  * Runs at 13:00 UTC (1 hour after the email worker at 12:00 UTC)
  * so the cache is already populated by the time this fires.
  */
+
+// ─── Interests (canonical source) ───
+
+const INTERESTS = [
+  "AI & ML", "Space", "Startups", "Programming", "Crypto & Web3",
+  "Technology", "Cybersecurity", "Robotics", "Quantum Computing", "Gadgets",
+  "Cloud Computing", "Data Science", "Web Development", "Open Source", "Semiconductors",
+  "Science", "Climate", "Biology", "Astronomy", "Physics", "Mathematics",
+  "Chemistry", "Geology", "Neuroscience", "Archaeology", "Genetics",
+  "Biotech", "Renewable Energy", "Nanotechnology", "VR & AR", "AI Ethics",
+  "Film", "Books", "Design", "Architecture", "Art & Painting",
+  "Photography", "Theatre", "Music", "Podcasts", "Streaming",
+  "Social Media", "Productivity", "Fitness", "Food & Cooking", "Travel",
+  "Personal Finance", "Self-Improvement", "Fashion", "Gardening", "DIY & Crafts",
+  "Meditation", "Mental Health", "Sustainable Living", "Health & Medicine", "Coffee",
+  "Wine & Spirits", "Parenting", "Pets & Animals", "Wildlife", "Geopolitics",
+  "Business", "Psychology", "Philosophy", "Sociology", "History",
+  "Economics", "Politics", "Law", "Anthropology", "Education",
+  "Languages", "Writing", "Entrepreneurship", "Public Speaking", "Leadership",
+  "Cars & EVs", "Aviation", "Defense & Military", "Energy", "Real Estate",
+  "Agriculture", "Urban Planning", "Stock Market", "Gaming", "Esports",
+  "Chess", "Football", "Basketball", "Cricket", "Tennis",
+  "F1 Racing", "Baseball", "Golf", "MMA", "Anime & Manga",
+  "Tabletop Games", "3D Printing", "Drones", "Music Production", "Running"
+];
 
 // ─── Book of the Week (from D1 books table) ───
 
@@ -244,6 +270,14 @@ export default {
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
+
+    // Interests list (canonical source for website + email worker)
+    if (path === '/interests') {
+      return jsonResponse({ interests: INTERESTS }, 200, {
+        ...CORS_HEADERS,
+        'Cache-Control': 'public, max-age=3600',
+      });
     }
 
     // Today's brief
