@@ -4,14 +4,17 @@ Read-only API worker for lostscale.com homepage.
 
 ## Endpoints
 
-- `GET /todays-brief` — picks a random cached section from today's email worker run
-- `GET /book-of-week` — returns current book of week
+- `GET /todays-brief` — returns today's brief (same for all visitors, picked once per day)
+- `GET /book-of-day` — returns today's recommended book (same for all visitors, picked once per day)
 - `GET /health` — health check
 
 ## Cache
 
-Reads from D1 `brief_cache` table populated by email-worker (cron at 12:00 UTC).
-This worker runs at 13:00 UTC as safety net.
+Reads from D1 tables:
+- `brief_cache` — populated by email-worker (cron at 12:00 UTC)
+- `daily_brief_cache` — one brief section picked per day, same for all visitors
+- `daily_book_cache` — one book picked per day, same for all visitors
+This worker runs at 13:00 UTC as safety net to pre-populate daily caches.
 
 ## Deploy
 

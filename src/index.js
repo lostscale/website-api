@@ -3,8 +3,8 @@
  *
  * Serves read-only content for the lostscale.com homepage:
  *  - GET /interests       → canonical list of valid interests (for website chips + email worker validation)
- *  - GET /todays-brief    → picks a random cached brief section from today's email run
- *  - GET /book-of-week    → returns the current book of the week (deterministic per ISO week)
+ *  - GET /todays-brief    → returns today's cached brief (deterministic: same for all visitors per day)
+ *  - GET /book-of-day     → returns today's recommended book (deterministic per day)
  *  - POST /add-book       → admin: add a book to the books table
  *
  * Runs at 13:00 UTC (1 hour after the email worker at 12:00 UTC)
@@ -36,18 +36,9 @@ const INTERESTS = [
   "Tabletop Games", "3D Printing", "Drones", "Music Production", "Running"
 ];
 
-// ─── Book of the Week (from D1 books table) ───
+// ─── Book of the Day (from D1 books table) ───
 
-function getWeekNumber() {
-  const date = new Date();
-  const tempDate = new Date(date.getTime());
-  tempDate.setHours(0, 0, 0, 0);
-  tempDate.setDate(tempDate.getDate() + 3 - (tempDate.getDay() + 6) % 7);
-  const week1 = new Date(tempDate.getFullYear(), 0, 4);
-  return 1 + Math.round(((tempDate.getTime() - week1.getTime()) / 86400000 - 3 + (week1.getDay() + 6) % 7) / 7);
-}
-
-async function getBookOfTheWeek(env) {
+async function getBookOfTheDay(env) {
   const today = new Date().toISOString().slice(0, 10);
 
   // Check if we already have a book picked for today
@@ -223,6 +214,23 @@ function checkAuth(request, env) {
 async function getTodaysBrief(env) {
   const today = new Date().toISOString().slice(0, 10);
 
+  // Check if we already have a brief picked for today (same for all visitors)
+  const cached = await env.DB.prepare(
+    'SELECT cache_key, result_json FROM daily_brief_cache WHERE date = ?'
+  ).bind(today).first();
+
+  if (cached) {
+    const parts = cached.cache_key.split('|');
+    const rawTopic = parts[1] || '';
+    const topic = rawTopic
+      ? rawTopic.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+      : "Today's Brief";
+
+    const parsed = JSON.parse(cached.result_json);
+    return { html: buildBriefHtml(parsed), topic };
+  }
+
+  // No brief for today yet — pick a random one from today's email run
   const result = await env.DB.prepare(
     "SELECT cache_key, result_json FROM brief_cache WHERE cache_key LIKE ? ORDER BY RANDOM() LIMIT 1"
   ).bind(`section|%|%|${today}`).first();
@@ -231,15 +239,25 @@ async function getTodaysBrief(env) {
     return { html: null, topic: null };
   }
 
+  // Cache it for today so all visitors see the same brief
+  await env.DB.prepare(
+    'INSERT OR REPLACE INTO daily_brief_cache (date, cache_key, result_json) VALUES (?, ?, ?)'
+  ).bind(today, result.cache_key, result.result_json).run();
+
   const parts = result.cache_key.split('|');
-  // Capitalize each word of the topic (cache stores it lowercased)
   const rawTopic = parts[1] || '';
   const topic = rawTopic
     ? rawTopic.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
     : "Today's Brief";
 
   const parsed = JSON.parse(result.result_json);
+  return { html: buildBriefHtml(parsed), topic };
+}
 
+/**
+ * Build HTML for a brief section from the parsed cache entry.
+ */
+function buildBriefHtml(parsed) {
   let html = '';
 
   if (parsed.paragraph) {
@@ -258,7 +276,7 @@ async function getTodaysBrief(env) {
     html += `<p style="margin:12px 0 0 0;font-size:0.8125rem;color:#999;">${sourcesHtml.trim()}</p>`;
   }
 
-  return { html, topic };
+  return html;
 }
 
 // ─── Worker entry ───
@@ -294,10 +312,10 @@ export default {
       }
     }
 
-    // Book of the week
-    if (path === '/book-of-week') {
+    // Book of the day
+    if (path === '/book-of-day') {
       try {
-        const book = await getBookOfTheWeek(env);
+        const book = await getBookOfTheDay(env);
         if (!book) {
           return jsonResponse({ error: 'No books available' }, 404, CORS_HEADERS);
         }
@@ -306,7 +324,7 @@ export default {
           'Cache-Control': 'public, max-age=3600',
         });
       } catch (err) {
-        console.error('Book of week error:', err);
+        console.error('Book of day error:', err);
         return jsonResponse({ error: 'Failed to get book' }, 500, CORS_HEADERS);
       }
     }
@@ -369,8 +387,8 @@ export default {
   },
 
   async scheduled(event, env) {
-    console.log('Website API cron tick — picking today\'s recommended book');
-    const book = await getBookOfTheWeek(env);
+    console.log('Website API cron tick — picking today\'s recommended book + brief');
+    const book = await getBookOfTheDay(env);
     console.log('Today\'s book:', book ? book.title : 'none available');
     const brief = await getTodaysBrief(env);
     console.log('Brief available:', brief.html ? 'yes' : 'no', '| topic:', brief.topic);
