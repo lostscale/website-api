@@ -22,25 +22,49 @@ function getWeekNumber() {
 }
 
 async function getBookOfTheWeek(env) {
-  const weekNo = getWeekNumber();
-  // Pick deterministic book for this week, cycling through all books
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Check if we already have a book picked for today
+  const cached = await env.DB.prepare(
+    'SELECT title, author, topic, description, affiliate_link, cover_link FROM daily_book_cache WHERE date = ?'
+  ).bind(today).first();
+
+  if (cached) {
+    return sanitizeBook({
+      title: cached.title,
+      author: cached.author,
+      topic: cached.topic,
+      description: cached.description,
+      cover_link: cached.cover_link,
+      affiliate_link: cached.affiliate_link,
+    });
+  }
+
+  // No book for today yet — pick a random one from the books table
   const count = await env.DB.prepare('SELECT COUNT(*) as cnt FROM books').first();
   if (!count || count.cnt === 0) {
     return null;
   }
-  const offset = weekNo % count.cnt;
+
   const book = await env.DB.prepare(
-    'SELECT title, author, topic, description, affiliate_link, cover_link FROM books LIMIT 1 OFFSET ?'
-  ).bind(offset).first();
+    'SELECT title, author, topic, description, affiliate_link, cover_link FROM books ORDER BY RANDOM() LIMIT 1'
+  ).first();
+
   if (!book) return null;
-  return {
+
+  // Cache it for today so all visitors see the same book
+  await env.DB.prepare(
+    'INSERT OR REPLACE INTO daily_book_cache (date, title, author, topic, description, affiliate_link, cover_link) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).bind(today, book.title, book.author, book.topic, book.description, book.affiliate_link, book.cover_link).run();
+
+  return sanitizeBook({
     title: book.title,
     author: book.author,
     topic: book.topic,
-    why: book.description,
-    cover: book.cover_link,
-    link: book.affiliate_link,
-  };
+    description: book.description,
+    cover_link: book.cover_link,
+    affiliate_link: book.affiliate_link,
+  });
 }
 
 /**
@@ -48,34 +72,90 @@ async function getBookOfTheWeek(env) {
  * Falls back to a random book if no topic match.
  */
 async function getBookForInterests(env, interests) {
-  // Try to find a book whose topic matches one of the subscriber's interests
+  // Collect all books whose topic matches any of the subscriber's interests
+  const matched = [];
   for (const interest of interests) {
-    const book = await env.DB.prepare(
-      'SELECT title, author, topic, description, affiliate_link, cover_link FROM books WHERE LOWER(topic) = LOWER(?) LIMIT 1'
-    ).bind(interest.toLowerCase()).first();
-    if (book) {
-      return {
-        title: book.title,
-        author: book.author,
-        topic: book.topic,
-        why: book.description,
-        cover: book.cover_link,
-        link: book.affiliate_link,
-      };
+    const result = await env.DB.prepare(
+      'SELECT title, author, topic, description, affiliate_link, cover_link FROM books WHERE LOWER(topic) = LOWER(?)'
+    ).bind(interest.toLowerCase()).all();
+    if (result.results && result.results.length > 0) {
+      matched.push(...result.results);
     }
+  }
+  // Pick one at random from all matches
+  if (matched.length > 0) {
+    const book = matched[Math.floor(Math.random() * matched.length)];
+    return sanitizeBook({
+      title: book.title,
+      author: book.author,
+      topic: book.topic,
+      description: book.description,
+      cover_link: book.cover_link,
+      affiliate_link: book.affiliate_link,
+    });
   }
   // Fallback: random book
   const book = await env.DB.prepare(
     'SELECT title, author, topic, description, affiliate_link, cover_link FROM books ORDER BY RANDOM() LIMIT 1'
   ).first();
   if (!book) return null;
-  return {
+  return sanitizeBook({
     title: book.title,
     author: book.author,
     topic: book.topic,
-    why: book.description,
-    cover: book.cover_link,
-    link: book.affiliate_link,
+    description: book.description,
+    cover_link: book.cover_link,
+    affiliate_link: book.affiliate_link,
+  });
+}
+
+/**
+ * Sanitize untrusted text for safe HTML insertion.
+ *
+ * Approach: escape EVERYTHING first, then selectively un-escape a tiny
+ * allowlist of formatting tags the LLM might reasonably produce.
+ * Anything else (<script>, <img onerror=…>, <a href=javascript:…>, etc.)
+ * stays escaped and renders as visible, harmless text.
+ */
+const SAFE_TAG_PATTERN = /&lt;\/?(b|i|em|strong|br|p)\s*&gt;/gi;
+
+function sanitizeText(text) {
+  if (!text) return '';
+  const escaped = String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+  // Re-enable only the allowlisted tags
+  return escaped.replace(SAFE_TAG_PATTERN, (match) =>
+    match.toLowerCase().replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+  );
+}
+
+/**
+ * Validate that a URL is safe for use in href or src.
+ * Only allows http:// and https:// protocols — blocks javascript:, data:, etc.
+ */
+function safeUrl(url) {
+  const u = String(url || '').trim();
+  if (/^https?:\/\//i.test(u)) return u;
+  return '#';
+}
+
+/**
+ * Sanitize all fields of a book object before returning to the API.
+ * Escapes text fields, validates URLs.
+ */
+function sanitizeBook(book) {
+  if (!book) return null;
+  return {
+    title: sanitizeText(book.title),
+    author: sanitizeText(book.author),
+    topic: sanitizeText(book.topic),
+    why: sanitizeText(book.description || book.why),
+    cover: safeUrl(book.cover_link || book.cover),
+    link: safeUrl(book.affiliate_link || book.link),
   };
 }
 
@@ -86,6 +166,33 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
+
+/**
+ * Constant-time string comparison to prevent timing attacks on auth tokens.
+ * Always processes the full length of both strings.
+ */
+function timingSafeEqual(a, b) {
+  const sa = String(a || '');
+  const sb = String(b || '');
+  let result = sa.length ^ sb.length;
+  const len = Math.max(sa.length, sb.length);
+  for (let i = 0; i < len; i++) {
+    const ca = i < sa.length ? sa.charCodeAt(i) : 0;
+    const cb = i < sb.length ? sb.charCodeAt(i) : 0;
+    result |= ca ^ cb;
+  }
+  return result === 0;
+}
+
+/**
+ * Check admin auth. Returns true if authorized, false otherwise.
+ */
+function checkAuth(request, env) {
+  const authHeader = request.headers.get('Authorization') || '';
+  const providedToken = authHeader.replace(/^Bearer\s+/i, '');
+  if (!env.ADMIN_TOKEN) return false;
+  return timingSafeEqual(providedToken, env.ADMIN_TOKEN);
+}
 
 async function getTodaysBrief(env) {
   const today = new Date().toISOString().slice(0, 10);
@@ -99,14 +206,18 @@ async function getTodaysBrief(env) {
   }
 
   const parts = result.cache_key.split('|');
-  const topic = parts[1] ? parts[1].charAt(0).toUpperCase() + parts[1].slice(1) : "Today's Brief";
+  // Capitalize each word of the topic (cache stores it lowercased)
+  const rawTopic = parts[1] || '';
+  const topic = rawTopic
+    ? rawTopic.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+    : "Today's Brief";
 
   const parsed = JSON.parse(result.result_json);
 
   let html = '';
 
   if (parsed.paragraph) {
-    html += `<p style="margin:0 0 16px 0;font-size:0.9375rem;line-height:1.6;color:#1a1a1a;">${parsed.paragraph}</p>`;
+    html += `<p style="margin:0 0 16px 0;font-size:0.9375rem;line-height:1.6;color:#1a1a1a;">${sanitizeText(parsed.paragraph)}</p>`;
   }
 
   const sources = parsed.sources || (parsed.searchResult && parsed.searchResult.sources) || [];
@@ -115,7 +226,7 @@ async function getTodaysBrief(env) {
     let sourcesHtml = 'Sources: ';
     sources.forEach((s, j) => {
       const num = j + 1;
-      const url = s.url || '#';
+      const url = safeUrl(s.url);
       sourcesHtml += `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:#2b6cb0;text-decoration:none;">[${num}]</a> `;
     });
     html += `<p style="margin:12px 0 0 0;font-size:0.8125rem;color:#999;">${sourcesHtml.trim()}</p>`;
@@ -168,9 +279,7 @@ export default {
 
     // Get a book for specific interests (used by email worker)
     if (path === '/book-for-interests' && request.method === 'POST') {
-      const authHeader = request.headers.get('Authorization') || '';
-      const providedToken = authHeader.replace(/^Bearer\s+/i, '');
-      if (!env.ADMIN_TOKEN || providedToken !== env.ADMIN_TOKEN) {
+      if (!checkAuth(request, env)) {
         return jsonResponse({ error: 'Unauthorized' }, 401, CORS_HEADERS);
       }
       try {
@@ -188,9 +297,7 @@ export default {
 
     // Add a book (admin only)
     if (path === '/add-book' && request.method === 'POST') {
-      const authHeader = request.headers.get('Authorization') || '';
-      const providedToken = authHeader.replace(/^Bearer\s+/i, '');
-      if (!env.ADMIN_TOKEN || providedToken !== env.ADMIN_TOKEN) {
+      if (!checkAuth(request, env)) {
         return jsonResponse({ error: 'Unauthorized' }, 401, CORS_HEADERS);
       }
       try {
@@ -210,9 +317,7 @@ export default {
 
     // List all books (admin only)
     if (path === '/books' && request.method === 'GET') {
-      const authHeader = request.headers.get('Authorization') || '';
-      const providedToken = authHeader.replace(/^Bearer\s+/i, '');
-      if (!env.ADMIN_TOKEN || providedToken !== env.ADMIN_TOKEN) {
+      if (!checkAuth(request, env)) {
         return jsonResponse({ error: 'Unauthorized' }, 401, CORS_HEADERS);
       }
       const result = await env.DB.prepare(
@@ -230,7 +335,9 @@ export default {
   },
 
   async scheduled(event, env) {
-    console.log('Website API cron tick — cache should already be populated by email worker');
+    console.log('Website API cron tick — picking today\'s recommended book');
+    const book = await getBookOfTheWeek(env);
+    console.log('Today\'s book:', book ? book.title : 'none available');
     const brief = await getTodaysBrief(env);
     console.log('Brief available:', brief.html ? 'yes' : 'no', '| topic:', brief.topic);
   },
