@@ -2,9 +2,11 @@
  * LostScale Website API Worker
  *
  * Serves read-only content for the lostscale.com homepage:
- *  - GET /interests       → canonical list of valid interests (for website chips + email worker validation)
- *  - GET /todays-brief    → returns today's cached brief (deterministic: same for all visitors per day)
- *  - GET /book-of-day     → returns today's recommended book (deterministic per day)
+ *  - GET  /interests       → canonical list of valid interests (for website chips + email worker validation)
+ *  - POST /subscribe        → subscribe a new or existing subscriber (public, no auth)
+ *  - POST /unsubscribe     → unsubscribe a subscriber by email (public, no auth)
+ *  - GET  /todays-brief    → returns today's cached brief (deterministic: same for all visitors per day)
+ *  - GET  /book-of-day     → returns today's recommended book (deterministic per day)
  *  - POST /add-book       → admin: add a book to the books table
  *
  * No cron — caches are pre-warmed by the email-worker calling this API
@@ -180,7 +182,7 @@ function sanitizeBook(book) {
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
@@ -296,6 +298,124 @@ export default {
         ...CORS_HEADERS,
         'Cache-Control': 'public, max-age=3600',
       });
+    }
+
+    // Subscribe (public — no auth needed)
+    if (path === '/subscribe' && request.method === 'POST') {
+      try {
+        const body = await request.json();
+        const email = String(body.email || '').trim().toLowerCase();
+        const interestsRaw = body.interests;
+        const vibeRaw = String(body.vibe || 'short-fun').trim();
+
+        // Validate email
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          return jsonResponse({ error: 'Please enter a valid email address.' }, 400, CORS_HEADERS);
+        }
+        if (email.length > 320) {
+          return jsonResponse({ error: 'Email address is too long.' }, 400, CORS_HEADERS);
+        }
+
+        // Validate interests: must be array of 3-5, all in canonical list
+        let interests;
+        if (Array.isArray(interestsRaw)) {
+          interests = interestsRaw.map(i => String(i).trim());
+        } else if (typeof interestsRaw === 'string') {
+          interests = interestsRaw.split(',').map(i => i.trim()).filter(Boolean);
+        } else {
+          interests = [];
+        }
+
+        if (interests.length < 3 || interests.length > 5) {
+          return jsonResponse({ error: 'Please pick 3 to 5 interests.' }, 400, CORS_HEADERS);
+        }
+
+        const validSet = new Set(INTERESTS);
+        const validLower = new Map(INTERESTS.map(i => [i.toLowerCase(), i]));
+        const validated = [];
+        for (const interest of interests) {
+          if (validSet.has(interest)) {
+            validated.push(interest);
+          } else if (validLower.has(interest.toLowerCase())) {
+            validated.push(validLower.get(interest.toLowerCase()));
+          }
+        }
+
+        if (validated.length !== interests.length || validated.length < 3) {
+          return jsonResponse({ error: 'Some selected interests are invalid. Please refresh and try again.' }, 400, CORS_HEADERS);
+        }
+
+        const interestsStr = validated.join(', ');
+        const vibe = vibeRaw === 'detailed-smart' ? 'detailed-smart' : 'short-fun';
+
+        // Check if subscriber already exists (to tailor the response message)
+        const existing = await env.DB.prepare(
+          'SELECT email FROM subscribers WHERE email = ?'
+        ).bind(email).first();
+
+        // Upsert subscriber (same logic as email-worker)
+        await env.DB.prepare(`
+          INSERT INTO subscribers (email, interests, vibe, status, created_at, updated_at)
+          VALUES (?, ?, ?, 'active', datetime('now'), datetime('now'))
+          ON CONFLICT(email) DO UPDATE SET
+            interests = excluded.interests,
+            vibe = excluded.vibe,
+            status = 'active',
+            updated_at = datetime('now')
+        `).bind(email, interestsStr, vibe).run();
+
+        const message = existing
+          ? "Preferences updated! Your next brief arrives tomorrow."
+          : "You're subscribed! Your first brief arrives tomorrow.";
+
+        return jsonResponse({
+          message,
+          interests: interestsStr,
+          vibe,
+        }, 200, CORS_HEADERS);
+      } catch (err) {
+        console.error('Subscribe error:', err);
+        return jsonResponse({ error: 'Something went wrong. Please try again.' }, 500, CORS_HEADERS);
+      }
+    }
+
+    // Unsubscribe (public — no auth needed)
+    if (path === '/unsubscribe' && request.method === 'POST') {
+      try {
+        const body = await request.json();
+        const email = String(body.email || '').trim().toLowerCase();
+
+        // Validate email
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          return jsonResponse({ error: 'Please enter a valid email address.' }, 400, CORS_HEADERS);
+        }
+        if (email.length > 320) {
+          return jsonResponse({ error: 'Email address is too long.' }, 400, CORS_HEADERS);
+        }
+
+        // Check if subscriber exists
+        const existing = await env.DB.prepare(
+          'SELECT email, status FROM subscribers WHERE email = ?'
+        ).bind(email).first();
+
+        if (!existing) {
+          return jsonResponse({ error: 'This email is not subscribed to LostScale.' }, 404, CORS_HEADERS);
+        }
+
+        if (existing.status === 'unsubscribed') {
+          return jsonResponse({ message: 'You are already unsubscribed. You will not receive further emails.' });
+        }
+
+        // Mark as unsubscribed (keep the row for analytics, don't delete)
+        await env.DB.prepare(
+          "UPDATE subscribers SET status = 'unsubscribed', updated_at = datetime('now') WHERE email = ?"
+        ).bind(email).run();
+
+        return jsonResponse({ message: 'You have been unsubscribed. Sorry to see you go! You can re-subscribe anytime by visiting this page again.' });
+      } catch (err) {
+        console.error('Unsubscribe error:', err);
+        return jsonResponse({ error: 'Something went wrong. Please try again.' }, 500, CORS_HEADERS);
+      }
     }
 
     // Today's brief
